@@ -219,6 +219,102 @@ if DISCORD_AVAILABLE:
                     return
                 await self._reply_ephemeral(interaction, build_help_text())
 
+            # --- mnemon command group ---
+            mnemon = app_commands.Group(
+                name="mnemon",
+                description="Persistent memory: store and recall facts",
+            )
+
+            @mnemon.command(name="recall", description="Recall past knowledge")
+            async def mnemon_recall(
+                interaction: discord.Interaction,
+                query: str,
+            ) -> None:
+                sender_id = str(interaction.user.id)
+                channel_id = interaction.channel_id
+                if channel_id is None:
+                    return
+                if not self._channel.is_allowed(sender_id):
+                    await self._reply_ephemeral(interaction, "You are not allowed to use this bot.")
+                    return
+                channel = await self._resolve_interaction_channel(interaction)
+                if not await self._interaction_channel_allowed(interaction, channel):
+                    await self._reply_ephemeral(interaction, "This channel is not allowed for this bot.")
+                    return
+                await self._reply_ephemeral(interaction, "Processing /mnemon recall...")
+                content = (
+                    "請立刻呼叫對應的工具，格式必須是：\n"
+                    "exec(command=\"mnemon recall ...\")\n\n"
+                    f"{query}"
+                )
+                metadata: dict[str, Any] = {
+                    "interaction_id": str(interaction.id),
+                    "guild_id": str(interaction.guild_id) if interaction.guild_id else None,
+                    "is_slash_command": True,
+                }
+                session_key = None
+                if channel is not None:
+                    parent_channel_id = self._channel._channel_parent_key(channel)
+                    if parent_channel_id is not None:
+                        metadata["parent_channel_id"] = parent_channel_id
+                        metadata["context_chat_id"] = parent_channel_id
+                        metadata["thread_id"] = str(channel_id)
+                        session_key = f"{self._channel.name}:{parent_channel_id}:thread:{channel_id}"
+                await self._channel._handle_message(
+                    sender_id=sender_id,
+                    chat_id=str(channel_id),
+                    content=content,
+                    metadata=metadata,
+                    session_key=session_key,
+                )
+
+            @mnemon.command(name="remember", description="Remember a new fact")
+            async def mnemon_remember(
+                interaction: discord.Interaction,
+                fact: str,
+            ) -> None:
+                sender_id = str(interaction.user.id)
+                channel_id = interaction.channel_id
+                if channel_id is None:
+                    return
+                if not self._channel.is_allowed(sender_id):
+                    await self._reply_ephemeral(interaction, "You are not allowed to use this bot.")
+                    return
+                channel = await self._resolve_interaction_channel(interaction)
+                if not await self._interaction_channel_allowed(interaction, channel):
+                    await self._reply_ephemeral(interaction, "This channel is not allowed for this bot.")
+                    return
+                await self._reply_ephemeral(interaction, "Processing /mnemon remember...")
+
+                try:
+                    proc = await asyncio.create_subprocess_exec(
+                        "mnemon", "remember", fact, "--no-diff",
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                    )
+                    try:
+                        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+                    except asyncio.TimeoutError:
+                        proc.kill()
+                        result = "mnemon command timed out."
+                    else:
+                        if proc.returncode == 0:
+                            result = "收到"
+                        else:
+                            result = (stderr.decode() or stdout.decode()).strip() or f"mnemon failed (exit {proc.returncode})"
+                except FileNotFoundError:
+                    result = "mnemon CLI not found. Install it first."
+                except Exception as e:
+                    result = f"mnemon error: {e}"
+
+                await self._channel.bus.publish_outbound(OutboundMessage(
+                    channel=self._channel.name,
+                    chat_id=str(channel_id),
+                    content=result,
+                ))
+
+            self.tree.add_command(mnemon)
+
             @self.tree.error
             async def on_app_command_error(
                 interaction: discord.Interaction,
